@@ -1,0 +1,402 @@
+{
+  "name": "Image + vLLM API Processing Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "formTitle": "이미지 및 프롬프트 입력",
+        "formDescription": "이미지를 업로드하거나 URL을 입력하고, vLLM에 보낼 프롬프트를 작성하세요.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "입력 방식 선택",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  { "option": "이미지 파일 업로드" },
+                  { "option": "이미지 URL 직접 입력" },
+                  { "option": "JSON 파일 업로드 (URL 포함)" }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "이미지 파일",
+              "fieldType": "file",
+              "requiredField": false,
+              "acceptFileTypes": ".jpg,.jpeg,.png,.gif,.webp,.bmp"
+            },
+            {
+              "fieldLabel": "이미지 URL (여러 개일 경우 줄바꿈으로 구분)",
+              "fieldType": "textarea",
+              "requiredField": false,
+              "placeholder": "https://example.com/image1.jpg\nhttps://example.com/image2.jpg"
+            },
+            {
+              "fieldLabel": "JSON 파일 (이미지 URL 포함)",
+              "fieldType": "file",
+              "requiredField": false,
+              "acceptFileTypes": ".json"
+            },
+            {
+              "fieldLabel": "사용자 프롬프트",
+              "fieldType": "textarea",
+              "requiredField": true,
+              "placeholder": "이 이미지에 대해 설명해주세요."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "form-input",
+      "name": "Form: 입력 폼",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [0, 600],
+      "webhookId": "image-vllm-form"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json['입력 방식 선택'] }}",
+                    "rightValue": "이미지 파일 업로드",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": "파일 업로드"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json['입력 방식 선택'] }}",
+                    "rightValue": "이미지 URL 직접 입력",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": "URL 입력"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json['입력 방식 선택'] }}",
+                    "rightValue": "JSON 파일 업로드 (URL 포함)",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": "JSON 업로드"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switch-input-type",
+      "name": "Switch: 입력 방식 분기",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [400, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 분기 1: 이미지 파일 업로드 처리\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const prompt = item.json['사용자 프롬프트'];\n  \n  // 바이너리 데이터에서 이미지 추출\n  if (item.binary) {\n    for (const [key, binaryData] of Object.entries(item.binary)) {\n      if (binaryData.mimeType && binaryData.mimeType.startsWith('image/')) {\n        const base64Data = binaryData.data;\n        const mimeType = binaryData.mimeType;\n        const fileName = binaryData.fileName || `image_${key}`;\n        \n        results.push({\n          json: {\n            image_source: 'file_upload',\n            image_base64: base64Data,\n            image_mime_type: mimeType,\n            image_filename: fileName,\n            image_data_url: `data:${mimeType};base64,${base64Data}`,\n            prompt: prompt,\n            image_index: results.length + 1\n          }\n        });\n      }\n    }\n  }\n}\n\nif (results.length === 0) {\n  throw new Error('업로드된 이미지 파일을 찾을 수 없습니다.');\n}\n\nreturn results;"
+      },
+      "id": "code-file-upload",
+      "name": "Code: 파일 업로드 처리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 분기 2: URL 직접 입력 처리\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const prompt = item.json['사용자 프롬프트'];\n  const urlText = item.json['이미지 URL (여러 개일 경우 줄바꿈으로 구분)'] || '';\n  \n  // 줄바꿈으로 URL 분리\n  const urls = urlText.split('\\n')\n    .map(url => url.trim())\n    .filter(url => url.length > 0 && (url.startsWith('http://') || url.startsWith('https://')));\n  \n  if (urls.length === 0) {\n    throw new Error('유효한 이미지 URL을 찾을 수 없습니다.');\n  }\n  \n  for (let i = 0; i < urls.length; i++) {\n    results.push({\n      json: {\n        image_source: 'url_input',\n        image_url: urls[i],\n        prompt: prompt,\n        image_index: i + 1,\n        total_images: urls.length\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "code-url-input",
+      "name": "Code: URL 입력 처리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 분기 3: JSON 파일에서 URL 추출\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const prompt = item.json['사용자 프롬프트'];\n  \n  // JSON 바이너리 데이터 파싱\n  let jsonData;\n  if (item.binary) {\n    for (const [key, binaryData] of Object.entries(item.binary)) {\n      if (binaryData.mimeType === 'application/json' || binaryData.fileName?.endsWith('.json')) {\n        const jsonString = Buffer.from(binaryData.data, 'base64').toString('utf-8');\n        jsonData = JSON.parse(jsonString);\n        break;\n      }\n    }\n  }\n  \n  if (!jsonData) {\n    throw new Error('JSON 파일을 파싱할 수 없습니다.');\n  }\n  \n  // JSON에서 이미지 URL 추출 (다양한 구조 지원)\n  let imageUrls = [];\n  \n  // Case 1: { \"images\": [\"url1\", \"url2\"] }\n  if (Array.isArray(jsonData.images)) {\n    imageUrls = jsonData.images.filter(url => typeof url === 'string');\n  }\n  // Case 2: { \"images\": [{\"url\": \"url1\"}, {\"url\": \"url2\"}] }\n  else if (Array.isArray(jsonData.images) && jsonData.images[0]?.url) {\n    imageUrls = jsonData.images.map(img => img.url || img.image_url).filter(Boolean);\n  }\n  // Case 3: { \"data\": [{\"image_url\": \"url1\"}, ...] }\n  else if (Array.isArray(jsonData.data)) {\n    imageUrls = jsonData.data.map(d => d.url || d.image_url || d.imageUrl).filter(Boolean);\n  }\n  // Case 4: { \"urls\": [\"url1\", \"url2\"] }\n  else if (Array.isArray(jsonData.urls)) {\n    imageUrls = jsonData.urls.filter(url => typeof url === 'string');\n  }\n  // Case 5: 배열 자체가 URL 목록\n  else if (Array.isArray(jsonData)) {\n    imageUrls = jsonData\n      .map(item => typeof item === 'string' ? item : (item.url || item.image_url || item.imageUrl))\n      .filter(Boolean);\n  }\n  \n  if (imageUrls.length === 0) {\n    throw new Error('JSON 파일에서 이미지 URL을 찾을 수 없습니다. 지원 형식: {\"images\": [...]}, {\"urls\": [...]}, {\"data\": [{\"url\": ...}]}');\n  }\n  \n  for (let i = 0; i < imageUrls.length; i++) {\n    results.push({\n      json: {\n        image_source: 'json_file',\n        image_url: imageUrls[i],\n        prompt: prompt,\n        image_index: i + 1,\n        total_images: imageUrls.length,\n        original_json_data: jsonData\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "code-json-upload",
+      "name": "Code: JSON 파일 처리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 800]
+    },
+    {
+      "parameters": {},
+      "id": "merge-inputs",
+      "name": "Merge: 입력 통합",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1000, 600],
+      "mode": "append"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 이미지 확인 및 임시 저장 준비\n// URL인 경우 다운로드, base64인 경우 그대로 유지\nconst item = $input.item;\nconst result = { ...item.json };\n\nif (item.json.image_source === 'url_input' || item.json.image_source === 'json_file') {\n  // URL 기반: vLLM API에 URL 직접 전달 가능\n  result.image_type = 'url';\n  result.image_content = item.json.image_url;\n  result.status = 'ready';\n} else if (item.json.image_source === 'file_upload') {\n  // 파일 업로드: base64 데이터 사용\n  result.image_type = 'base64';\n  result.image_content = item.json.image_base64;\n  result.status = 'ready';\n}\n\nresult.processing_timestamp = new Date().toISOString();\n\nreturn { json: result };"
+      },
+      "id": "code-validate-image",
+      "name": "Code: 이미지 확인 및 준비",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 600]
+    },
+    {
+      "parameters": {
+        "options": {
+          "batches": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "loop-images",
+      "name": "Loop: 이미지 순차 처리",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1500, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// vLLM API 요청 본문 구성\n// OpenAI-compatible API 형식 사용\nconst item = $input.item;\nconst prompt = item.json.prompt;\nconst imageType = item.json.image_type;\nconst imageContent = item.json.image_content;\nconst mimeType = item.json.image_mime_type || 'image/jpeg';\n\n// 이미지 컨텐츠 구성\nlet imagePayload;\nif (imageType === 'url') {\n  imagePayload = {\n    type: 'image_url',\n    image_url: {\n      url: imageContent\n    }\n  };\n} else {\n  // base64\n  imagePayload = {\n    type: 'image_url',\n    image_url: {\n      url: `data:${mimeType};base64,${imageContent}`\n    }\n  };\n}\n\n// OpenAI-compatible vLLM 요청 본문\nconst requestBody = {\n  model: '{{ $env.VLLM_MODEL_NAME || \"your-model-name\" }}',\n  messages: [\n    {\n      role: 'user',\n      content: [\n        {\n          type: 'text',\n          text: prompt\n        },\n        imagePayload\n      ]\n    }\n  ],\n  max_tokens: 2048,\n  temperature: 0.7\n};\n\nreturn {\n  json: {\n    ...item.json,\n    request_body: requestBody\n  }\n};"
+      },
+      "id": "code-build-request",
+      "name": "Code: API 요청 구성",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1750, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VLLM_API_URL || 'http://localhost:8000' }}/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request_body) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "http-vllm-api",
+      "name": "HTTP: vLLM API 호출",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 600],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "VLLM_AUTH_CREDENTIAL_ID",
+          "name": "vLLM API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// API 응답 파싱\nconst item = $input.item;\nconst response = item.json;\n\n// vLLM (OpenAI-compatible) 응답 구조에서 텍스트 추출\nlet resultText = '';\nlet parsedResult = {};\n\ntry {\n  const body = response.body || response;\n  \n  // OpenAI-compatible 응답 파싱\n  if (body.choices && body.choices.length > 0) {\n    resultText = body.choices[0].message?.content || body.choices[0].text || '';\n  }\n  \n  // 사용량 정보\n  const usage = body.usage || {};\n  \n  parsedResult = {\n    // 원본 이미지 정보\n    image_index: item.json.image_index || $runIndex + 1,\n    image_source: item.json.image_source,\n    image_url: item.json.image_url || null,\n    image_data_url: item.json.image_data_url || null,\n    image_type: item.json.image_type,\n    image_content: item.json.image_content,\n    image_mime_type: item.json.image_mime_type || 'image/jpeg',\n    \n    // 프롬프트\n    prompt: item.json.prompt,\n    \n    // API 결과\n    result_text: resultText,\n    model: body.model || '',\n    finish_reason: body.choices?.[0]?.finish_reason || '',\n    \n    // 토큰 사용량\n    prompt_tokens: usage.prompt_tokens || 0,\n    completion_tokens: usage.completion_tokens || 0,\n    total_tokens: usage.total_tokens || 0,\n    \n    // 메타데이터\n    processing_timestamp: new Date().toISOString(),\n    api_response_id: body.id || '',\n    \n    // 원본 응답 (디버깅용)\n    raw_response: body\n  };\n  \n} catch (error) {\n  parsedResult = {\n    image_index: item.json.image_index || $runIndex + 1,\n    image_source: item.json.image_source,\n    image_url: item.json.image_url || null,\n    prompt: item.json.prompt,\n    result_text: `오류 발생: ${error.message}`,\n    error: true,\n    error_message: error.message,\n    raw_response: response\n  };\n}\n\nreturn { json: parsedResult };"
+      },
+      "id": "code-parse-response",
+      "name": "Code: 응답 파싱",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 5-1) 처리 결과 텍스트 표시\nconst item = $input.item;\n\nconst displayResult = {\n  '이미지 번호': item.json.image_index,\n  '이미지 소스': item.json.image_source,\n  '이미지 URL': item.json.image_url || '(파일 업로드)',\n  '프롬프트': item.json.prompt,\n  '--- 분석 결과 ---': '========================================',\n  '결과 텍스트': item.json.result_text,\n  '--- 메타데이터 ---': '========================================',\n  '모델': item.json.model,\n  '완료 사유': item.json.finish_reason,\n  '프롬프트 토큰': item.json.prompt_tokens,\n  '응답 토큰': item.json.completion_tokens,\n  '총 토큰': item.json.total_tokens,\n  '처리 시간': item.json.processing_timestamp\n};\n\nreturn { json: displayResult };"
+      },
+      "id": "code-display-text",
+      "name": "Code: 5-1 텍스트 결과 표시",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2550, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 5-2) 처리한 이미지 표시\nconst item = $input.item;\nconst result = { json: { ...item.json } };\n\n// 이미지를 바이너리 데이터로 변환하여 n8n에서 미리보기 가능하게 함\nif (item.json.image_type === 'base64' && item.json.image_content) {\n  // base64 이미지를 바이너리로 변환\n  result.binary = {\n    image: {\n      data: item.json.image_content,\n      mimeType: item.json.image_mime_type || 'image/jpeg',\n      fileName: `processed_image_${item.json.image_index}.jpg`\n    }\n  };\n} else if (item.json.image_type === 'url' && item.json.image_content) {\n  // URL인 경우 표시용 정보만 전달 (실제 다운로드는 HTTP Request 노드 필요)\n  result.json.image_display_url = item.json.image_content;\n  result.json.image_display_html = `<img src=\"${item.json.image_content}\" style=\"max-width:500px;\" alt=\"Image ${item.json.image_index}\">`;\n}\n\nresult.json.display_label = `이미지 #${item.json.image_index} - ${item.json.image_source}`;\nresult.json.result_summary = item.json.result_text?.substring(0, 200) + (item.json.result_text?.length > 200 ? '...' : '');\n\nreturn result;"
+      },
+      "id": "code-display-image",
+      "name": "Code: 5-2 이미지 결과 표시",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2550, 750]
+    },
+    {
+      "parameters": {
+        "jsCode": "// URL 이미지 다운로드 (미리보기용)\n// 이 노드는 URL 기반 이미지를 바이너리로 변환\nconst item = $input.item;\n\nif (item.json.image_type === 'url' && item.json.image_content) {\n  // n8n HTTP Request로 이미지를 다운로드하여 바이너리 변환 필요\n  // 여기서는 메타데이터만 준비\n  return {\n    json: {\n      ...item.json,\n      download_url: item.json.image_content,\n      needs_download: true\n    }\n  };\n}\n\nreturn { json: item.json };"
+      },
+      "id": "code-prepare-download",
+      "name": "Code: 이미지 다운로드 준비",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2550, 950]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.download_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "http-download-image",
+      "name": "HTTP: 이미지 다운로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2800, 950]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 최종 결과 집계\nconst items = $input.all();\n\nconst summary = {\n  total_processed: items.length,\n  processing_time: new Date().toISOString(),\n  results: items.map((item, i) => ({\n    index: i + 1,\n    image_source: item.json.image_source || item.json['이미지 소스'],\n    result_preview: (item.json.result_text || item.json['결과 텍스트'] || '').substring(0, 100),\n    status: item.json.error ? 'ERROR' : 'SUCCESS'\n  }))\n};\n\nreturn [{ json: summary }];"
+      },
+      "id": "code-summary",
+      "name": "Code: 최종 결과 요약",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2800, 450]
+    }
+  ],
+  "connections": {
+    "Form: 입력 폼": {
+      "main": [
+        [
+          { "node": "Switch: 입력 방식 분기", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Switch: 입력 방식 분기": {
+      "main": [
+        [
+          { "node": "Code: 파일 업로드 처리", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Code: URL 입력 처리", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Code: JSON 파일 처리", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: 파일 업로드 처리": {
+      "main": [
+        [
+          { "node": "Merge: 입력 통합", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: URL 입력 처리": {
+      "main": [
+        [
+          { "node": "Merge: 입력 통합", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: JSON 파일 처리": {
+      "main": [
+        [
+          { "node": "Merge: 입력 통합", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Merge: 입력 통합": {
+      "main": [
+        [
+          { "node": "Code: 이미지 확인 및 준비", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: 이미지 확인 및 준비": {
+      "main": [
+        [
+          { "node": "Loop: 이미지 순차 처리", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Loop: 이미지 순차 처리": {
+      "main": [
+        [
+          { "node": "Code: API 요청 구성", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: API 요청 구성": {
+      "main": [
+        [
+          { "node": "HTTP: vLLM API 호출", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "HTTP: vLLM API 호출": {
+      "main": [
+        [
+          { "node": "Code: 응답 파싱", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: 응답 파싱": {
+      "main": [
+        [
+          { "node": "Code: 5-1 텍스트 결과 표시", "type": "main", "index": 0 },
+          { "node": "Code: 5-2 이미지 결과 표시", "type": "main", "index": 0 },
+          { "node": "Code: 이미지 다운로드 준비", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: 5-1 텍스트 결과 표시": {
+      "main": [
+        [
+          { "node": "Code: 최종 결과 요약", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Code: 이미지 다운로드 준비": {
+      "main": [
+        [
+          { "node": "HTTP: 이미지 다운로드", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "vLLM" },
+    { "name": "이미지처리" },
+    { "name": "AI" }
+  ]
+}
